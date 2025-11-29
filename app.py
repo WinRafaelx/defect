@@ -10,11 +10,15 @@ app = Flask(__name__)
 video_capture = None
 current_frame = None
 latest_ai_result = {"violation": False, "reason": "System Starting..."}
+ai_processing = False  # Flag to prevent multiple simultaneous AI calls
 lock = threading.Lock()
 
 # --- Config ---
 VIDEO_SOURCE = "warehose.mp4" # ใช้ไฟล์วิดีโอแทนกล้องจริง เพื่อความชัวร์ตอนเดโม
 AI_CHECK_INTERVAL = 1 # ส่ง AI ตรวจทุกๆ 1 วินาที (เครื่องช้าให้เพิ่มเลขนี้)
+FRAME_SKIP_RATE = 2  # Skip frames between AI checks (read every Nth frame)
+RESIZE_WIDTH = 512   # Smaller resolution for faster processing (was 640)
+RESIZE_HEIGHT = 384  # Smaller resolution for faster processing (was 480)
 
 # --- The Hard-coded Prompt (สำหรับโมเดลเล็ก) ---
 SAFETY_PROMPT = """
@@ -23,9 +27,23 @@ JSON format only: {"violation": boolean, "reason": "short text"}
 If no hard hat, violation is true.
 """
 
+def process_ai_async(frame, frame_num):
+    """Process AI in background thread to avoid blocking video reading"""
+    global latest_ai_result, ai_processing
+    try:
+        ai_result = analyze_image_local(frame, SAFETY_PROMPT, jpeg_quality=75, max_size=(RESIZE_WIDTH, RESIZE_HEIGHT))
+        with lock:
+            latest_ai_result = ai_result
+    except Exception as e:
+        print(f"❌ AI processing error: {e}")
+        with lock:
+            latest_ai_result = {"violation": False, "reason": f"AI Error: {str(e)}"}
+    finally:
+        ai_processing = False
+
 def video_loop():
-    """Thread สำหรับอ่านวิดีโอและส่ง AI"""
-    global current_frame, latest_ai_result, video_capture
+    """Thread สำหรับอ่านวิดีโอและส่ง AI (Optimized with frame skipping)"""
+    global current_frame, latest_ai_result, video_capture, ai_processing
     print(f"📹 Opening video file: {VIDEO_SOURCE}")
     video_capture = cv2.VideoCapture(VIDEO_SOURCE)
     
@@ -33,42 +51,45 @@ def video_loop():
         print(f"❌ Error: Could not open video file {VIDEO_SOURCE}")
         return
     
-    print(f"✅ Video opened successfully. Processing frames...")
-    print(f"🤖 AI will analyze frames every {AI_CHECK_INTERVAL} second(s)")
+    # Get video FPS to calculate optimal frame skipping
+    video_fps = video_capture.get(cv2.CAP_PROP_FPS) or 30
+    frames_to_skip = max(1, int(video_fps * AI_CHECK_INTERVAL / FRAME_SKIP_RATE))
     
     frame_count = 0
+    frames_read = 0
     last_ai_check = time.time()
 
     while True:
         ret, frame = video_capture.read()
         if not ret:
-            print("🔄 Video ended, looping back to start...")
             video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0) # วนลูปวิดีโอ
+            continue
+        
+        frames_read += 1
+        
+        # Skip frames to reduce processing load
+        if frames_read % FRAME_SKIP_RATE != 0:
             continue
             
         frame_count += 1
         
         # Resize ภาพให้เล็กลงก่อนส่ง AI เพื่อความเร็ว (สำคัญสำหรับ Local model)
-        small_frame = cv2.resize(frame, (640, 480))
+        small_frame = cv2.resize(frame, (RESIZE_WIDTH, RESIZE_HEIGHT), interpolation=cv2.INTER_AREA)
 
         with lock:
             current_frame = small_frame.copy()
 
-        # --- AI Check Logic ---
+        # --- AI Check Logic (Non-blocking) ---
         now = time.time()
-        if now - last_ai_check > AI_CHECK_INTERVAL:
-            print(f"\n📸 Frame #{frame_count}: Sending to AI engine...")
-            # เรียกใช้ Local AI (ตรงนี้จะบล็อก Thread นี้สักพักนึง)
-            ai_result = analyze_image_local(small_frame, SAFETY_PROMPT)
-            
-            print(f"✅ AI Result: {ai_result}")
-            
-            with lock:
-                latest_ai_result = ai_result
-            
+        if now - last_ai_check >= AI_CHECK_INTERVAL and not ai_processing:
+            ai_processing = True
+            # Process AI in separate thread to avoid blocking video reading
+            ai_thread = threading.Thread(target=process_ai_async, args=(small_frame, frame_count), daemon=True)
+            ai_thread.start()
             last_ai_check = now # Reset เวลา
         
-        time.sleep(0.03) # ประมาณ 30 FPS
+        # Reduced sleep since we're skipping frames
+        time.sleep(0.01)
 
 def generate_mjpeg():
     """Generator สำหรับส่งภาพไปแสดงบนเว็บ"""
@@ -88,7 +109,9 @@ def generate_mjpeg():
             cv2.putText(display_frame, status_text, (10, 50), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
 
-            (flag, encodedImage) = cv2.imencode(".jpg", display_frame)
+            # Use lower quality for faster encoding
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, 80]
+            (flag, encodedImage) = cv2.imencode(".jpg", display_frame, encode_params)
             if not flag: continue
             
         yield(b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + 
@@ -117,6 +140,5 @@ if __name__ == '__main__':
     t.start()
     
     # Start Flask server
-    print("🚀 Local Server starting at http://0.0.0.0:5000")
-    # host='0.0.0.0' เพื่อให้เครื่องอื่นในวง LAN เปิดดูได้ (ถ้าต้องการ)
+    print("🚀 Server starting at http://0.0.0.0:5000")
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

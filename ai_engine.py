@@ -2,19 +2,50 @@ import requests
 import base64
 import json
 import cv2
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # URL ของ Ollama ที่รันอยู่บนเครื่องเรา (Default port)
 OLLAMA_URL = "http://localhost:11434/api/generate"
 # ชื่อโมเดลที่ pull มา
-MODEL_NAME = "qwen3-vl:8b" 
+MODEL_NAME = "qwen3-vl:8b"
 
-def analyze_image_local(image_cv2, prompt):
+# Create session with connection pooling for faster requests
+_session = None
+def get_session():
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        # Retry strategy for robustness
+        retry_strategy = Retry(
+            total=2,
+            backoff_factor=0.1,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=1, pool_maxsize=1)
+        _session.mount("http://", adapter)
+    return _session 
+
+def analyze_image_local(image_cv2, prompt, jpeg_quality=75, max_size=(512, 384)):
     """
     รับภาพจาก OpenCV -> แปลงเป็น Base64 -> ส่งให้ Ollama -> คืนค่า JSON string
+    
+    Optimizations:
+    - jpeg_quality: Lower quality (75) for faster encoding/transmission (default was 95)
+    - max_size: Resize to smaller dimensions for faster processing
     """
     try:
-        # 1. Convert OpenCV image to JPEG bytes then to Base64 string
-        _, buffer = cv2.imencode('.jpg', image_cv2)
+        # 0. Resize to smaller dimensions if needed (faster processing)
+        h, w = image_cv2.shape[:2]
+        if w > max_size[0] or h > max_size[1]:
+            scale = min(max_size[0] / w, max_size[1] / h)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            image_cv2 = cv2.resize(image_cv2, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
+        # 1. Convert OpenCV image to JPEG bytes with lower quality for speed
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+        _, buffer = cv2.imencode('.jpg', image_cv2, encode_params)
         jpg_as_text = base64.b64encode(buffer).decode('utf-8')
 
         # 2. Construct payload for Ollama API
@@ -27,9 +58,9 @@ def analyze_image_local(image_cv2, prompt):
             "format": "json"  # บังคับให้ Ollama พยายามตอบเป็น JSON (ฟีเจอร์ใหม่)
         }
 
-        # 3. Send request to local Ollama instance
-        print("🤖 Sending to local AI model...")
-        response = requests.post(OLLAMA_URL, json=payload, timeout=30) # timeout เผื่อเครื่องช้า
+        # 3. Send request to local Ollama instance (using session for connection reuse)
+        session = get_session()
+        response = session.post(OLLAMA_URL, json=payload, timeout=30) # timeout เผื่อเครื่องช้า
         response.raise_for_status()
 
         # 4. Parse response
@@ -38,8 +69,6 @@ def analyze_image_local(image_cv2, prompt):
         ai_text_response = result_json.get("response", "")
         if not ai_text_response or ai_text_response.strip() == "":
             ai_text_response = result_json.get("thinking", "{}")
-        
-        print(f"🤖 AI Answer: {ai_text_response}")
         
         # พยายามแปลง String เป็น Python Dict
         # (โมเดลเล็กบางทีอาจจะตอบ JSON เพี้ยนๆ ต้องระวังตรงนี้ใน Hackathon)
