@@ -14,24 +14,25 @@ ai_processing = False  # Flag to prevent multiple simultaneous AI calls
 lock = threading.Lock()
 
 # --- Config ---
-VIDEO_SOURCE = "warehose.mp4" # ใช้ไฟล์วิดีโอแทนกล้องจริง เพื่อความชัวร์ตอนเดโม
-AI_CHECK_INTERVAL = 1 # ส่ง AI ตรวจทุกๆ 1 วินาที (เครื่องช้าให้เพิ่มเลขนี้)
-FRAME_SKIP_RATE = 2  # Skip frames between AI checks (read every Nth frame)
-RESIZE_WIDTH = 512   # Smaller resolution for faster processing (was 640)
-RESIZE_HEIGHT = 384  # Smaller resolution for faster processing (was 480)
+# Import centralized configuration
+from config import (
+    SAFETY_PROMPT, 
+    DEFAULT_VIDEO_SOURCE, 
+    AI_CHECK_INTERVAL, 
+    FRAME_SKIP_RATE, 
+    RESIZE_WIDTH, 
+    RESIZE_HEIGHT, 
+    JPEG_QUALITY, 
+    MAX_IMAGE_SIZE
+)
 
-# --- The Hard-coded Prompt (สำหรับโมเดลเล็ก) ---
-SAFETY_PROMPT = """
-Are they wearing a hard hat? 
-JSON format only: {"violation": boolean, "reason": "short text"}
-If no hard hat, violation is true.
-"""
+VIDEO_SOURCE = DEFAULT_VIDEO_SOURCE  # ใช้ไฟล์วิดีโอแทนกล้องจริง เพื่อความชัวร์ตอนเดโม
 
 def process_ai_async(frame, frame_num):
     """Process AI in background thread to avoid blocking video reading"""
     global latest_ai_result, ai_processing
     try:
-        ai_result = analyze_image_local(frame, SAFETY_PROMPT, jpeg_quality=75, max_size=(RESIZE_WIDTH, RESIZE_HEIGHT))
+        ai_result = analyze_image_local(frame, SAFETY_PROMPT, jpeg_quality=JPEG_QUALITY, max_size=MAX_IMAGE_SIZE)
         with lock:
             latest_ai_result = ai_result
     except Exception as e:
@@ -132,7 +133,11 @@ def video_feed():
 def get_status():
     # API สำหรับ Frontend มาดึงสถานะ (ถ้าต้องการทำ UI แยก)
     with lock:
-        return jsonify(latest_ai_result)
+        # Remove reason if safe (no violation)
+        result = latest_ai_result.copy()
+        if not result.get("violation", False):
+            result.pop("reason", None)
+        return jsonify(result)
 
 if __name__ == '__main__':
     # Start Video Thread

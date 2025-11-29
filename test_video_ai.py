@@ -7,19 +7,12 @@ import time
 from ai_engine import analyze_image_local
 
 # Configuration
-VIDEO_SOURCE = "warehose.mp4"
-AI_CHECK_INTERVAL = 2  # Check every 2 seconds
+from config import DEFAULT_VIDEO_SOURCE
+VIDEO_SOURCE = DEFAULT_VIDEO_SOURCE
 MAX_FRAMES_TO_PROCESS = 10  # Process only first 10 AI checks for demo
-FRAME_SKIP_RATE = 2  # Skip frames between AI checks (read every Nth frame)
-RESIZE_WIDTH = 512   # Smaller resolution for faster processing
-RESIZE_HEIGHT = 384  # Smaller resolution for faster processing
 
-# Safety prompt
-SAFETY_PROMPT = """
-Are they wearing a hard hat? 
-JSON format only: {"violation": boolean, "reason": "short text"}
-If no hard hat, violation is true.
-"""
+# Import centralized configuration
+from config import SAFETY_PROMPT, AI_CHECK_INTERVAL, FRAME_SKIP_RATE, RESIZE_WIDTH, RESIZE_HEIGHT, JPEG_QUALITY, MAX_IMAGE_SIZE
 
 def main():
     print(f"📹 Processing video: {VIDEO_SOURCE}")
@@ -56,10 +49,13 @@ def main():
         # Check if it's time to send to AI
         if current_time - last_ai_check >= AI_CHECK_INTERVAL:
             ai_check_count += 1
-            ai_result = analyze_image_local(small_frame, SAFETY_PROMPT, jpeg_quality=75, max_size=(RESIZE_WIDTH, RESIZE_HEIGHT))
+            ai_result = analyze_image_local(small_frame, SAFETY_PROMPT, jpeg_quality=JPEG_QUALITY, max_size=MAX_IMAGE_SIZE)
             
             status = "VIOLATION" if ai_result.get("violation") else "SAFE"
-            print(f"Check #{ai_check_count}: {status} - {ai_result.get('reason', '')}")
+            if ai_result.get("violation"):
+                print(f"Check #{ai_check_count}: {status} - {ai_result.get('reason', '')}")
+            else:
+                print(f"Check #{ai_check_count}: {status}")
             
             last_ai_check = current_time
         

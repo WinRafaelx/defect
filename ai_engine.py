@@ -73,11 +73,38 @@ def analyze_image_local(image_cv2, prompt, jpeg_quality=75, max_size=(512, 384))
         # พยายามแปลง String เป็น Python Dict
         # (โมเดลเล็กบางทีอาจจะตอบ JSON เพี้ยนๆ ต้องระวังตรงนี้ใน Hackathon)
         try:
-            return json.loads(ai_text_response)
+            result = json.loads(ai_text_response)
+            
+            # Determine violation based on missing mandatory PPE items
+            # Mandatory items: hard hat, safety vest, safety boots
+            missing_ppe = result.get("missing_ppe", [])
+            if isinstance(missing_ppe, str):
+                # Handle case where missing_ppe might be a string
+                missing_ppe = [missing_ppe] if missing_ppe else []
+            
+            # Check if any mandatory items are missing
+            mandatory_items = ["hard hat", "helmet", "safety vest", "high-visibility", "safety boots", "boots"]
+            has_mandatory_violation = any(
+                any(mandatory in str(item).lower() for mandatory in mandatory_items)
+                for item in missing_ppe
+            )
+            
+            # Set violation based on missing mandatory items
+            result["violation"] = has_mandatory_violation
+            
+            # Update reason only if violation detected, remove reason if safe
+            if has_mandatory_violation:
+                if "reason" not in result:
+                    result["reason"] = f"Missing mandatory PPE: {', '.join(missing_ppe)}"
+            else:
+                # Remove reason for safe cases
+                result.pop("reason", None)
+            
+            return result
         except json.JSONDecodeError:
              print("⚠️ AI did not return valid JSON. Using raw text.")
              # Hack: ถ้าแกะ JSON ไม่ได้ ให้ถือว่าผิดกฎไว้ก่อน หรือ return ค่า default
-             return {"violation": True, "reason": "AI JSON Error: " + ai_text_response}
+             return {"violation": True, "reason": "AI JSON Error: " + ai_text_response, "missing_ppe": []}
 
     except Exception as e:
         print(f"❌ Error calling local AI: {e}")
@@ -91,13 +118,15 @@ if __name__ == "__main__":
         print("หาไฟล์รูป testo.png ไม่เจอ")
         exit()
 
-    # Prompt สำหรับโมเดลเล็ก: ต้องชัดเจนมากๆ
-    TEST_PROMPT = """
-    Look at the person. Are they wearing a hard hat (helmet)? 
-    JSON output required: {"wearing_helmet": boolean, "violation": boolean}
-    If wearing_helmet is false, violation must be true.
-    """
+    # Import centralized prompt
+    from config import SAFETY_PROMPT
     
-    result = analyze_image_local(test_img, TEST_PROMPT)
+    result = analyze_image_local(test_img, SAFETY_PROMPT)
     print("\n--- Final Result ---")
-    print(result)
+    # Only show reason if there's a violation
+    if result.get("violation"):
+        print(result)
+    else:
+        # Remove reason for safe cases in display
+        display_result = {k: v for k, v in result.items() if k != "reason"}
+        print(display_result)
