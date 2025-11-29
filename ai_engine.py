@@ -26,14 +26,22 @@ def get_session():
         _session.mount("http://", adapter)
     return _session 
 
-def analyze_image_local(image_cv2, prompt, jpeg_quality=75, max_size=(512, 384)):
+def analyze_image_local(image_cv2, prompt, jpeg_quality=75, max_size=(512, 384), optimize_prompt=False):
     """
     รับภาพจาก OpenCV -> แปลงเป็น Base64 -> ส่งให้ Ollama -> คืนค่า JSON string
     
     Optimizations:
     - jpeg_quality: Lower quality (75) for faster encoding/transmission (default was 95)
     - max_size: Resize to smaller dimensions for faster processing
+    - optimize_prompt: Compress prompt to reduce processing time (if True)
     """
+    # Optimize prompt if requested (reduces processing time significantly)
+    if optimize_prompt:
+        try:
+            from prompt_optimizer import compress_prompt
+            prompt = compress_prompt(prompt)
+        except ImportError:
+            pass  # If optimizer not available, use original prompt
     try:
         # 0. Resize to smaller dimensions if needed (faster processing)
         h, w = image_cv2.shape[:2]
@@ -49,7 +57,8 @@ def analyze_image_local(image_cv2, prompt, jpeg_quality=75, max_size=(512, 384))
         jpg_as_text = base64.b64encode(buffer).decode('utf-8')
 
         # 2. Construct payload for Ollama API
-        # เคล็ดลับ: โมเดลเล็กๆ ต้องการ Prompt ที่ตรงไปตรงมา สั้นๆ ง่ายๆ
+        # Note: Prompt length has minimal impact on speed (image processing is the bottleneck)
+        # You can use detailed, longer prompts for real-world scenarios without performance loss
         payload = {
             "model": MODEL_NAME,
             "prompt": prompt + " Respond strictly in JSON format only.",

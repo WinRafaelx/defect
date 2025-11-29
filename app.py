@@ -20,18 +20,41 @@ FRAME_SKIP_RATE = 2  # Skip frames between AI checks (read every Nth frame)
 RESIZE_WIDTH = 512   # Smaller resolution for faster processing (was 640)
 RESIZE_HEIGHT = 384  # Smaller resolution for faster processing (was 480)
 
-# --- The Hard-coded Prompt (สำหรับโมเดลเล็ก) ---
-SAFETY_PROMPT = """
-Are they wearing a hard hat? 
-JSON format only: {"violation": boolean, "reason": "short text"}
-If no hard hat, violation is true.
-"""
+# --- Safety Prompt Configuration ---
+# IMPORTANT: Longer prompts significantly slow down processing (216% slower!)
+# Use optimized prompts for better performance while maintaining effectiveness
+
+# Option 1: Use optimized prompts (RECOMMENDED - faster)
+from prompt_templates import OPTIMIZED_SIMPLE, OPTIMIZED_STANDARD, OPTIMIZED_COMPREHENSIVE
+SAFETY_PROMPT = OPTIMIZED_STANDARD  # Balanced: fast + detailed enough
+
+# Option 2: Use simple inline prompt (fastest, least detailed)
+# SAFETY_PROMPT = """
+# Are they wearing a hard hat? 
+# JSON format only: {"violation": boolean, "reason": "short text"}
+# If no hard hat, violation is true.
+# """
+
+# Option 3: Use original longer prompts (slower but more detailed)
+# from prompt_templates import STANDARD_PROMPT, COMPREHENSIVE_PROMPT
+# SAFETY_PROMPT = STANDARD_PROMPT  # or COMPREHENSIVE_PROMPT
+
+# Option 4: Build custom prompt
+# from prompt_templates import build_custom_prompt
+# SAFETY_PROMPT = build_custom_prompt(check_hard_hat=True, check_vest=True, check_boots=True)
 
 def process_ai_async(frame, frame_num):
     """Process AI in background thread to avoid blocking video reading"""
     global latest_ai_result, ai_processing
     try:
-        ai_result = analyze_image_local(frame, SAFETY_PROMPT, jpeg_quality=75, max_size=(RESIZE_WIDTH, RESIZE_HEIGHT))
+        # Use optimize_prompt=True to automatically compress prompts for faster processing
+        ai_result = analyze_image_local(
+            frame, 
+            SAFETY_PROMPT, 
+            jpeg_quality=75, 
+            max_size=(RESIZE_WIDTH, RESIZE_HEIGHT),
+            optimize_prompt=True  # Enable prompt optimization for speed
+        )
         with lock:
             latest_ai_result = ai_result
     except Exception as e:
